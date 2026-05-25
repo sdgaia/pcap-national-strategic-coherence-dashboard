@@ -2,103 +2,496 @@ import express from 'express';
 
 const app = express();
 
-const KEY = process.env.AIRTABLE_API_KEY;const BASE = process.env.AIRTABLE_BASE_ID;const NAT_TABLE =process.env.AIRTABLE_NATIONAL_STRATEGIES_TABLE || 'National Strategies';const SEC_TABLE =process.env.AIRTABLE_SECTORAL_STRATEGIES_TABLE || 'Sectoral Strategies';
+const KEY = process.env.AIRTABLE_API_KEY;
+const BASE = process.env.AIRTABLE_BASE_ID;
+const NAT_TABLE = process.env.AIRTABLE_NATIONAL_STRATEGIES_TABLE || 'National Strategies';
+const SEC_TABLE = process.env.AIRTABLE_SECTORAL_STRATEGIES_TABLE || 'Sectoral Strategies';
 
-function safe(v: any) {return String(v ?? '').replace(/[&<>"]/g,(s) =>({ '&': '&', '<': '<', '>': '>', '"': '"' } as any)[s]);}
-
-function pick(f: any, n: string[], d: any = '') {for (const k of n) {const v = f?.[k];if (v !== undefined && v !== null && v !== '') return v;}return d;}
-
-function text(f: any, n: string[], d = 'Not specified') {const v = pick(f, n, d);if (Array.isArray(v)) {return (v.map((x) => (typeof x === 'object' ? x.name || x.id || '' : x)).filter(Boolean).join(', ') || d);}return typeof v === 'object' && v?.name ? v.name : String(v || d);}
-
-function num(f: any, n: string[], d = 0) {const v = pick(f, n, d);const raw = Array.isArray(v) ? v[0] : v;const s = String(raw ?? '').replace('%', '').trim();const x = Number(s);return Number.isFinite(x) ? (x > 0 && x <= 1 ? Math.round(x * 100) : Math.round(x)) : d;}
-
-function status(v: number) {return v >= 80 ? 'Strong' : v >= 60 ? 'Moderate' : v >= 40 ? 'Fragile' : 'Critical';}
-
-function col(v: number) {return v >= 80 ? '#16a34a' : v >= 60 ? '#2563eb' : v >= 40 ? '#f97316' : '#dc2626';}
-
-function badgeClass(v: number) {return v >= 80 ? 'good' : v >= 60 ? 'mid' : v >= 40 ? 'frag' : 'bad';}
-
-function avg(a: number[]) {const x = a.filter((n) => Number.isFinite(n) && n > 0);return x.length ? Math.round(x.reduce((p, c) => p + c, 0) / x.length) : 0;}
-
-function stdev(a: number[]) {const x = a.filter((n) => Number.isFinite(n) && n > 0);if (x.length < 2) return 0;const m = x.reduce((p, c) => p + c, 0) / x.length;return Math.round(Math.sqrt(x.reduce((p, c) => p + Math.pow(c - m, 2), 0) / x.length));}
-
-async function get(table: string, id: string) {if (!KEY || !BASE || !id) return null;const url = https://api.airtable.com/v0/${BASE}/${encodeURIComponent(table)}/${id};const r = await fetch(url, { headers: { Authorization: Bearer ${KEY} } });if (!r.ok) throw new Error(await r.text());return r.json();}
-
-async function getLinked(table: string, ids: string[]) {if (!Array.isArray(ids)) return [];const out = [];for (const id of ids.slice(0, 16)) {try {const r = await get(table, id);if (r) out.push(r);} catch (e) {}}return out;}
-
-function section(report: string, title: string) {const t = String(report || '');const i = t.toLowerCase().indexOf(title.toLowerCase());if (i < 0) return '';const rest = t.slice(i + title.length).trim();const next = rest.search(/\n[A-Z][A-Za-z\s/–-]{4,}\n/);return (next > 0 ? rest.slice(0, next) : rest).trim().split('\n').filter(Boolean).slice(0, 5).join(' ');}
-
-function build(record: any, sectors: any[]) {const f = record?.fields || {};const report = text(f, ['National Strategy-Level AI Coherence Reports', 'AI Coherence Report'], '');
-
-const c = [num(f, ['C1 National Strategy Coherence Score'], 0),num(f, ['C2 National Strategy Coherence Score'], 0),num(f, ['C3 National Strategy Coherence Score'], 0),num(f, ['C4 National Strategy Coherence Score'], 0),num(f, ['C5 National Strategy Coherence Score'], 0),num(f, ['C6 National Strategy Coherence Score'], 0),];
-
-const cc = c.some((x) => x > 0) ? c : [83, 58, 42, 15, 47, 72];
-
-const score = num(f,['National Strategy Coherence Score', 'Final National Strategy Coherence Score'],avg(cc));
-
-const ociD = num(f,['National Strategy Intrinsic OCI-D', 'National Strategy Intrinsic OCI-D Score'],avg([cc[0], cc[1], cc[2]]));
-
-const ociO = num(f,['National Strategy Intrinsic OCI-O', 'National Strategy Intrinsic OCI-O Score'],avg([cc[3], cc[4], cc[5]]));
-
-const aggregation = num(f,['Sectoral Strategy Aggregation Coherence Score', 'Inherited Sectoral Strategy OCI-D Score'],score);
-
-const rows = (sectors || []).map((r, i) => {const sf = r.fields || {};const v = num(sf,['Final Sectoral Strategy Coherence Score','Sectoral Strategy Aggregation Coherence Score','Final Sectoral Strategy OCI-D Score',],0);return {name: text(sf, ['Strategy Name', 'Sector Strategy ID', 'Name'], Sectoral Strategy ${i + 1}),score: v,status: status(v),};}).filter((x) => x.score > 0).sort((a, b) => a.score - b.score);
-
-const sectorList = rows.length? rows: [{ name: 'SS-1 Agriculture & Food Systems', score: 44, status: 'Fragile' },{ name: 'SS-2 Climate / NDC', score: 66, status: 'Moderate' },{ name: 'SS-3 Forestry & Landscape', score: 66, status: 'Moderate' },{ name: 'SS-4 Waste & Circular Economy', score: 28, status: 'Critical' },{ name: 'SS-5 SDG / VNR', score: 44, status: 'Fragile' },];
-
-const dispersion = stdev(sectorList.map((x) => x.score));const fragmentation = Math.min(100,Math.round(dispersion * 2 + Math.max(0, 80 - Math.min(...sectorList.map((x) => x.score))) / 2));
-
-const certBase = Math.round((score + aggregation + ociD + ociO + Math.max(0, 100 - fragmentation)) / 5);
-
-return {id: text(f, ['ID', 'Strategy ID'], record?.id || 'NS'),name: text(f, ['Strategy Name', 'Name'], 'National Strategy'),country: text(f, ['Country'], 'Ghana'),focus: text(f, ['Strategic Focus'], 'National governance intelligence'),global: text(f, ['Global Frameworks', 'Linked Global Frameworks'], 'Global frameworks not linked'),regional: text(f,['Regional Frameworks', 'Linked Regional Guideline', 'Regional Frameworks (from Linked National Strategies)'],'Regional frameworks not linked'),docs: text(f, ['National Strategy Source Documents', 'Policy Source Documents'], 'No source documents listed'),claimCount: num(f, ['National Strategy Claim Count', 'National  Strategy Claim Count'], 0),docType: text(f, ['Policy Document Types'], 'Analytical Report'),owner: text(f, ['National Strategy Coherence Owner'], 'Reviewer'),govResp: text(f, ['National Strategy Governance Responsibility'], 'Not assigned'),transResp: text(f,['National Strategy  Translation Responsibility', 'National Strategy Translation Responsibility'],'Not assigned'),monitorResp: text(f, ['National Strategy Monitoring Responsibility'], 'Reviewer'),score,ociD,ociO,aggregation,fragmentation,certBase,c: cc,coherenceStatus: text(f,['National Strategy Coherence Status', 'Final National Strategy Coherence Status'],status(score)),ociDRationale: text(f,['National Strategy OCI-D Rationale'],section(report, 'AI Coherence Report') ||'Design coherence is derived from C1-C3 strategic coherence indicators and linked evidence.'),ociORationale: text(f,['National Strategy OCI-O Rationale'],'Operational coherence is derived from C4-C6 strategic coherence indicators and linked evidence validation.'),reviewer: text(f,['Recommended Reviewer Focus 2', 'Recommended Reviewer Focus'],'Review unsupported or weak claims, evidence sufficiency, and translation of strategic responsibilities.'),cert: section(report, 'Certification Outlook') || 'Certification outlook not yet confirmed.',summary: section(report, 'Executive Summary') || report.slice(0, 620) || 'Governance intelligence summary pending.',strengths: section(report, 'Key Strengths') || 'Strategic articulation, reference coherence and documentary foundations require confirmation.',weaknesses: section(report, 'Critical Weaknesses') || 'Weaknesses require reviewer confirmation.',sectors: sectorList,};}
-
-function gauge(t: string, v: number, sub?: string) {return <div class="card kpi"><div class="k-title">${safe(t)}</div><div class="semi" style="--v:${v};--c:${col(v)}"><div class="num">${v}%</div><div class="lab">${safe(sub || status(v))}</div></div><div class="scale"><span>0%</span><span>100%</span></div></div>;}
-
-function reverseGauge(t: string, v: number) {const c = v <= 20 ? '#16a34a' : v <= 40 ? '#2563eb' : v <= 60 ? '#f97316' : '#dc2626';const s = v <= 20 ? 'Low' : v <= 40 ? 'Moderate' : v <= 60 ? 'High' : 'Severe';return <div class="card kpi"><div class="k-title">${safe(t)}</div><div class="semi" style="--v:${v};--c:${c}"><div class="num">${v}%</div><div class="lab">${s}</div></div><div class="scale"><span>0%</span><span>100%</span></div></div>;}
-
-function bar(t: string, v: number) {return <div class="bar"><b>${safe(t)}</b><div class="track"><div class="fill" style="width:${v}%;background:${col(v)}"></div></div><strong>${v}%</strong></div>;}
-
-function mini(t: string, v: number) {return <div class="mini"><h4>${safe(t)}</h4><div class="semi small" style="--v:${v};--c:${col(v)}"><div class="num sn">${v}%</div><div class="lab sl">${status(v)}</div></div></div>;}
-
-function radar(c: number[]) {const p = [[0, -1.35 * c[0]],[1.17 * c[1], -0.67 * c[1]],[1.17 * c[2], 0.67 * c[2]],[0, 1.35 * c[3]],[-1.17 * c[4], 0.67 * c[4]],[-1.17 * c[5], -0.67 * c[5]],].map((x) => x.join(',')).join(' ');
-
-return <svg viewBox="0 0 420 350" width="100%" height="315"><g transform="translate(210 170)"><polygon points="0,-135 117,-67 117,67 0,135 -117,67 -117,-67" fill="none" stroke="#cbd5e1"/><polygon points="0,-101 88,-50 88,50 0,101 -88,50 -88,-50" fill="none" stroke="#dbe3ef"/><polygon points="0,-68 59,-34 59,34 0,68 -59,34 -59,-34" fill="none" stroke="#dbe3ef"/><polygon points="0,-34 29,-17 29,17 0,34 -29,17 -29,-17" fill="none" stroke="#dbe3ef"/><polygon points="${p}" fill="rgba(37,99,235,.16)" stroke="#2563eb" stroke-width="4"/><text x="0" y="-154" text-anchor="middle">C1 Alignment</text><text x="145" y="-70" text-anchor="middle">C2 Translation</text><text x="145" y="82" text-anchor="middle">C3 Architecture</text><text x="0" y="163" text-anchor="middle">C4 Monitoring</text><text x="-145" y="82" text-anchor="middle">C5 Escalation</text><text x="-145" y="-70" text-anchor="middle">C6 Auditability</text></g></svg>;}
-
-function row(s: any, i: number) {return <tr><td>${i + 1}</td><td>${safe(s.name)}</td><td class="score" style="color:${col(
-    s.score
-  )}">${s.score}%</td><td><span class="badge ${badgeClass(s.score)}">${safe(s.status)}</span></td></tr>;}
-
-function node(t: string, s: string, cls = '') {return <div class="node ${cls}"><b>${safe(t)}</b><span>${safe(s)}</span></div>;}
-
-function renderEmbed(d: any) {return `PCAP Embed*{box-sizing}html,body{margin:0;padding:0;background;font-family,Helvetica,sans-serif;color:#0b1533;overflow}.embed{width:100%;height:100%;padding:8px;background:#fff}.embed-top{display;grid-template-columns:1.2fr .8fr;gap:8px;margin-bottom:8px}.embed-title{font-size:14px;font-weight:900;line-height:1.15}.embed-sub{font-size:10px;color:#64748b;margin-top:2px}.status-card{border:1px solid #e5e7eb;border-radius:10px;padding:8px;text-align}.status-card b{font-size:11px;display;margin-bottom:3px}.status-card strong{font-size:24px;color:${col(d.score)}}.status-card span{font-size:10px;color:${col(d.score)};font-weight:800;display}.grid{display;grid-template-columns(5,1fr);gap:8px}.card{border:1px solid #e5e7eb;border-radius:10px;background:#fff;padding:8px;height:128px}.k-title{text-align;font-size:10px;font-weight:900;height:25px}.semi{width:138px;height:69px;position;overflow;margin:2px auto 0}.semi{content:"";position;width:138px;height:138px;border-radius:50%;background(from 270deg,var(--c) calc(var(--v)*1.8deg),#e5e7eb 0 180deg,transparent 0)}.semi{content:"";position;left:22px;top:22px;width:94px;height:94px;border-radius:50%;background:#fff}.num{position;top:28px;left:0;right:0;text-align;font-size:20px;font-weight:900;color(--c);z-index:1}.lab{position;top:52px;left:0;right:0;text-align;font-size:9px;font-weight:900;color(--c);z-index:1}.scale{display;justify-content;font-size:8px;color:#64748b}.bottom{display;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px}.mini{border:1px solid #e5e7eb;border-radius:10px;padding:8px;height:68px}.mini b{display;font-size:10px;margin-bottom:5px}.track{height:7px;background:#e5e7eb;border-radius:99px;overflow}.fill{height:7px;border-radius:99px}.mini span{font-size:10px;font-weight:900}@media(max-width:800px){.grid{grid-template-columns(2,1fr)}.card{height:120px}.bottom{display}.embed-top{grid-template-columns:1fr}}
-
-function renderFull(d: any) {const names = ['C1 Strategic Alignment','C2 Policy Translation','C3 Sectoral Architecture','C4 Strategic Monitoring','C5 Strategic Escalation','C6 Strategic Auditability',];
-
-const weak = Math.min(...d.c);const wi = d.c.indexOf(weak);const best = d.sectors[d.sectors.length - 1];const worst = d.sectors[0];
-
-return `PCAP National Governance Intelligence Dashboard*{box-sizing}body{margin:0;background:#f5f7fb;font-family,Helvetica,sans-serif;color:#0b1533;padding:14px}.wrap{max-width:1880px;margin;background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:20px;box-shadow:0 8px 28px rgba(15,23,42,.05)}.top{display;justify-content;gap:20px}.title{font-size:36px;font-weight:900;letter-spacing:-.5px}.sub{margin-top:8px;color:#64748b;font-size:15px}.meta{font-size:13px;color:#475569;text-align}.grid5{display;grid-template-columns(5,1fr);gap:12px;margin-top:18px}.grid2{display;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}.bottom{display;grid-template-columns:1.35fr 1fr;gap:12px;margin-top:12px}.triple{display;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:12px}.card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px;box-shadow:0 3px 16px rgba(15,23,42,.035)}h3{margin:0 0 12px;font-size:16px}.kpi{height:215px}.k-title{text-align;font-size:15px;font-weight:900;min-height:34px}.semi{width:245px;height:122px;position;overflow;margin:8px auto 0}.semi{content:"";position;width:245px;height:245px;border-radius:50%;background(from 270deg,var(--c) calc(var(--v)*1.8deg),#e5e7eb 0 180deg,transparent 0)}.semi{content:"";position;left:38px;top:38px;width:169px;height:169px;border-radius:50%;background:#fff}.num{position;top:54px;left:0;right:0;text-align;font-size:34px;font-weight:900;color(--c);z-index:1}.lab{position;top:94px;left:0;right:0;text-align;font-size:13px;font-weight:900;color(--c);z-index:1}.scale{display;justify-content;font-size:12px}.radarblock{display;grid-template-columns:54% 46%;gap:12px;align-items}.bar{display;grid-template-columns:210px 1fr 45px;gap:12px;align-items;margin:14px 0}.track{height:8px;background:#e5e7eb;border-radius:99px;overflow}.fill{height:8px;border-radius:99px}.weak{margin-top:18px;border:1px solid #fecaca;background:#fff1f2;color:#b91c1c;border-radius:8px;padding:12px;font-size:13px;font-weight:900;display;justify-content}.pill{background:#dc2626;color:#fff;border-radius:99px;padding:7px 12px}.halfgrid{display;grid-template-columns(3,1fr);gap:14px}.mini h4{text-align;margin:0;font-size:14px}.small{width:185px;height:92px}.small{width:185px;height:185px}.small{left:29px;top:29px;width:127px;height:127px}.sn{top:42px;font-size:27px}.sl{top:74px;font-size:12px}table{width:100%;border-collapse;font-size:13px}th,td{border:1px solid #e5e7eb;padding:10px;text-align}th{background:#f8fafc}td(2){text-align;font-weight:800}.score{font-size:17px;font-weight:900}.badge{border-radius:999px;padding:6px 10px;font-weight:800}.good{background:#ecfdf5;color:#166534}.mid{background:#eff6ff;color:#1d4ed8}.frag{background:#fff7ed;color:#ea580c}.bad{background:#fff1f2;color:#b91c1c}.box{border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin-bottom:12px}.box h4{margin:0 0 8px}.box p{font-size:13px;line-height:1.45;margin:0}.chain{display;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px}.node{border:1px solid #dbeafe;background:#eff6ff;border-radius:12px;padding:12px;min-height:82px}.node b{display;margin-bottom:8px}.node span{font-size:12px;color:#475569}.risk{background:#fff7ed;border-color:#fed7aa}.ok{background:#ecfdf5;border-color:#bbf7d0}.note{margin-top:14px;color:#64748b;font-size:12px}@media(max-width:1200px){.grid5,.grid2,.bottom,.triple,.radarblock,.halfgrid,.chain{grid-template-columns:1fr}.top{display}.meta{text-align;margin-top:10px}}
-
-function render(d: any, embed = false) {return embed ? renderEmbed(d) : renderFull(d);}
-
-async function handle(req: any, res: any) {try {const id = String(req.query.recordId || '').trim();const embed = String(req.query.embed || '') === '1';
-
-let rec = null;
-let sectors: any[] = [];
-
-if (id) {
-  rec = await get(NAT_TABLE, id);
-  const f = rec?.fields || {};
-  sectors = await getLinked(
-    SEC_TABLE,
-    f['Sectoral Strategies'] || f['Linked Sectoral Strategies'] || []
-  );
+function safe(v) {
+  return String(v ?? '').replace(/[&<>"]/g, s => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;'
+  }[s]));
 }
 
-res.setHeader('Content-Type', 'text/html; charset=utf-8');
-res.setHeader('Cache-Control', 'no-store');
-res.send(render(build(rec, sectors), embed));
+function pick(f, names, d = '') {
+  for (const k of names) {
+    const v = f?.[k];
+    if (v !== undefined && v !== null && v !== '') return v;
+  }
+  return d;
+}
 
-} catch (e: any) {res.status(500).send('Dashboard error: ' + safe(e.message));}}
+function text(f, names, d = 'Not specified') {
+  const v = pick(f, names, d);
+  if (Array.isArray(v)) {
+    return v
+      .map(x => typeof x === 'object' ? x.name || x.id || '' : x)
+      .filter(Boolean)
+      .join(', ') || d;
+  }
+  return typeof v === 'object' && v?.name ? v.name : String(v || d);
+}
+
+function num(f, names, d = 0) {
+  const v = pick(f, names, d);
+  const raw = Array.isArray(v) ? v[0] : v;
+  const x = Number(String(raw ?? '').replace('%', '').trim());
+  return Number.isFinite(x)
+    ? x > 0 && x <= 1 ? Math.round(x * 100) : Math.round(x)
+    : d;
+}
+
+function status(v) {
+  return v >= 80 ? 'Strong' : v >= 60 ? 'Moderate' : v >= 40 ? 'Fragile' : 'Critical';
+}
+
+function col(v) {
+  return v >= 80 ? '#16a34a' : v >= 60 ? '#2563eb' : v >= 40 ? '#f97316' : '#dc2626';
+}
+
+function avg(a) {
+  const x = a.filter(n => Number.isFinite(n) && n > 0);
+  return x.length ? Math.round(x.reduce((p, c) => p + c, 0) / x.length) : 0;
+}
+
+function stdev(a) {
+  const x = a.filter(n => Number.isFinite(n) && n > 0);
+  if (x.length < 2) return 0;
+  const m = x.reduce((p, c) => p + c, 0) / x.length;
+  return Math.round(Math.sqrt(x.reduce((p, c) => p + Math.pow(c - m, 2), 0) / x.length));
+}
+
+async function get(table, id) {
+  if (!KEY || !BASE || !id) return null;
+
+  const url = `https://api.airtable.com/v0/${BASE}/${encodeURIComponent(table)}/${id}`;
+
+  const r = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${KEY}`
+    }
+  });
+
+  if (!r.ok) throw new Error(await r.text());
+
+  return r.json();
+}
+
+async function getLinked(table, ids) {
+  if (!Array.isArray(ids)) return [];
+
+  const out = [];
+
+  for (const id of ids.slice(0, 16)) {
+    try {
+      const r = await get(table, id);
+      if (r) out.push(r);
+    } catch (e) {}
+  }
+
+  return out;
+}
+
+function build(record, sectors) {
+  const f = record?.fields || {};
+
+  const c = [
+    num(f, ['C1 National Strategy Coherence Score'], 0),
+    num(f, ['C2 National Strategy Coherence Score'], 0),
+    num(f, ['C3 National Strategy Coherence Score'], 0),
+    num(f, ['C4 National Strategy Coherence Score'], 0),
+    num(f, ['C5 National Strategy Coherence Score'], 0),
+    num(f, ['C6 National Strategy Coherence Score'], 0)
+  ];
+
+  const cc = c.some(x => x > 0) ? c : [83, 58, 42, 15, 47, 72];
+
+  const score = num(
+    f,
+    ['National Strategy Coherence Score', 'Final National Strategy Coherence Score'],
+    avg(cc)
+  );
+
+  const ociD = num(
+    f,
+    ['National Strategy Intrinsic OCI-D', 'National Strategy Intrinsic OCI-D Score'],
+    avg([cc[0], cc[1], cc[2]])
+  );
+
+  const ociO = num(
+    f,
+    ['National Strategy Intrinsic OCI-O', 'National Strategy Intrinsic OCI-O Score'],
+    avg([cc[3], cc[4], cc[5]])
+  );
+
+  const aggregation = num(
+    f,
+    ['Sectoral Strategy Aggregation Coherence Score', 'Inherited Sectoral Strategy OCI-D Score'],
+    score
+  );
+
+  const rows = (sectors || [])
+    .map((r, i) => {
+      const sf = r.fields || {};
+      const v = num(
+        sf,
+        [
+          'Final Sectoral Strategy Coherence Score',
+          'Sectoral Strategy Aggregation Coherence Score',
+          'Final Sectoral Strategy OCI-D Score'
+        ],
+        0
+      );
+
+      return {
+        name: text(sf, ['Strategy Name', 'Sector Strategy ID', 'Name'], `Sectoral Strategy ${i + 1}`),
+        score: v,
+        status: status(v)
+      };
+    })
+    .filter(x => x.score > 0)
+    .sort((a, b) => a.score - b.score);
+
+  const sectorList = rows.length ? rows : [
+    { name: 'SS-1 Agriculture & Food Systems', score: 44, status: 'Fragile' },
+    { name: 'SS-2 Climate / NDC', score: 66, status: 'Moderate' },
+    { name: 'SS-3 Forestry & Landscape', score: 66, status: 'Moderate' },
+    { name: 'SS-4 Waste & Circular Economy', score: 28, status: 'Critical' },
+    { name: 'SS-5 SDG / VNR', score: 44, status: 'Fragile' }
+  ];
+
+  const dispersion = stdev(sectorList.map(x => x.score));
+
+  const fragmentation = Math.min(
+    100,
+    Math.round(
+      dispersion * 2 +
+      Math.max(0, 80 - Math.min(...sectorList.map(x => x.score))) / 2
+    )
+  );
+
+  return {
+    id: text(f, ['ID', 'Strategy ID'], record?.id || 'NS'),
+    name: text(f, ['Strategy Name', 'Name'], 'National Strategy'),
+    country: text(f, ['Country'], 'Ghana'),
+    owner: text(f, ['National Strategy Coherence Owner'], 'Reviewer'),
+    score,
+    ociD,
+    ociO,
+    aggregation,
+    fragmentation,
+    certBase: Math.round((score + aggregation + ociD + ociO + Math.max(0, 100 - fragmentation)) / 5),
+    c: cc,
+    coherenceStatus: text(
+      f,
+      ['National Strategy Coherence Status', 'Final National Strategy Coherence Status'],
+      status(score)
+    ),
+    sectors: sectorList
+  };
+}
+
+function gauge(title, value, label) {
+  return `
+    <div class="card kpi">
+      <div class="k-title">${safe(title)}</div>
+      <div class="semi" style="--v:${value};--c:${col(value)}">
+        <div class="num">${value}%</div>
+        <div class="lab">${safe(label || status(value))}</div>
+      </div>
+      <div class="scale">
+        <span>0%</span>
+        <span>100%</span>
+      </div>
+    </div>
+  `;
+}
+
+function reverseGauge(title, value) {
+  const c = value <= 20 ? '#16a34a' : value <= 40 ? '#2563eb' : value <= 60 ? '#f97316' : '#dc2626';
+  const s = value <= 20 ? 'Low' : value <= 40 ? 'Moderate' : value <= 60 ? 'High' : 'Severe';
+
+  return `
+    <div class="card kpi">
+      <div class="k-title">${safe(title)}</div>
+      <div class="semi" style="--v:${value};--c:${c}">
+        <div class="num">${value}%</div>
+        <div class="lab">${s}</div>
+      </div>
+      <div class="scale">
+        <span>0%</span>
+        <span>100%</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderEmbed(d) {
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+*{box-sizing:border-box}
+html,body{
+  margin:0;
+  padding:0;
+  background:transparent;
+  font-family:Arial,Helvetica,sans-serif;
+  color:#0b1533;
+  overflow:hidden;
+}
+.embed{
+  width:100%;
+  padding:8px;
+  background:#fff;
+}
+.grid{
+  display:grid;
+  grid-template-columns:repeat(5,1fr);
+  gap:8px;
+}
+.card{
+  border:1px solid #e5e7eb;
+  border-radius:10px;
+  background:#fff;
+  padding:8px;
+  height:130px;
+}
+.k-title{
+  text-align:center;
+  font-size:10px;
+  font-weight:900;
+  height:26px;
+}
+.semi{
+  width:140px;
+  height:70px;
+  position:relative;
+  overflow:hidden;
+  margin:2px auto 0;
+}
+.semi:before{
+  content:"";
+  position:absolute;
+  width:140px;
+  height:140px;
+  border-radius:50%;
+  background:conic-gradient(
+    from 270deg,
+    var(--c) calc(var(--v)*1.8deg),
+    #e5e7eb 0 180deg,
+    transparent 0
+  );
+}
+.semi:after{
+  content:"";
+  position:absolute;
+  left:22px;
+  top:22px;
+  width:96px;
+  height:96px;
+  border-radius:50%;
+  background:#fff;
+}
+.num{
+  position:absolute;
+  top:29px;
+  left:0;
+  right:0;
+  text-align:center;
+  font-size:20px;
+  font-weight:900;
+  color:var(--c);
+  z-index:1;
+}
+.lab{
+  position:absolute;
+  top:52px;
+  left:0;
+  right:0;
+  text-align:center;
+  font-size:9px;
+  font-weight:900;
+  color:var(--c);
+  z-index:1;
+}
+.scale{
+  display:flex;
+  justify-content:space-between;
+  font-size:8px;
+  color:#64748b;
+}
+@media(max-width:900px){
+  .grid{grid-template-columns:repeat(2,1fr)}
+}
+</style>
+</head>
+<body>
+<div class="embed">
+  <div class="grid">
+    ${gauge('Governance Intelligence', d.score, d.coherenceStatus)}
+    ${gauge('Sectoral Aggregation', d.aggregation, status(d.aggregation))}
+    ${gauge('Intrinsic OCI-D', d.ociD, status(d.ociD))}
+    ${gauge('Intrinsic OCI-O', d.ociO, status(d.ociO))}
+    ${reverseGauge('Fragmentation Index', d.fragmentation)}
+  </div>
+</div>
+</body>
+</html>
+`;
+}
+
+function renderFull(d) {
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>PCAP National Governance Dashboard</title>
+<style>
+*{box-sizing:border-box}
+body{
+  margin:0;
+  padding:40px;
+  background:#f1f5f9;
+  font-family:Arial,sans-serif;
+  color:#0f172a;
+}
+.header{
+  background:white;
+  border-radius:24px;
+  padding:30px;
+  box-shadow:0 2px 10px rgba(0,0,0,0.05);
+}
+.title{
+  font-size:42px;
+  font-weight:bold;
+}
+.subtitle{
+  margin-top:12px;
+  color:#475569;
+  font-size:18px;
+}
+.grid{
+  margin-top:30px;
+  display:grid;
+  grid-template-columns:repeat(5,1fr);
+  gap:20px;
+}
+.card{
+  background:white;
+  border-radius:24px;
+  padding:25px;
+  box-shadow:0 2px 10px rgba(0,0,0,0.05);
+}
+.card-title{
+  color:#64748b;
+  font-size:14px;
+  font-weight:bold;
+}
+.card-value{
+  margin-top:14px;
+  font-size:52px;
+  font-weight:bold;
+}
+.green{color:#16a34a}
+.blue{color:#2563eb}
+.orange{color:#f97316}
+.red{color:#dc2626}
+.section{
+  margin-top:30px;
+  background:white;
+  border-radius:24px;
+  padding:30px;
+  box-shadow:0 2px 10px rgba(0,0,0,0.05);
+}
+@media(max-width:1200px){
+  .grid{grid-template-columns:repeat(2,1fr)}
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="title">PCAP National Governance Dashboard</div>
+  <div class="subtitle">${safe(d.name)} • ${safe(d.country)} • Recursive Governance Intelligence Renderer</div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <div class="card-title">Governance Score</div>
+    <div class="card-value green">${d.score}%</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Sectoral Aggregation</div>
+    <div class="card-value blue">${d.aggregation}%</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">OCI-D</div>
+    <div class="card-value orange">${d.ociD}%</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">OCI-O</div>
+    <div class="card-value blue">${d.ociO}%</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Fragmentation</div>
+    <div class="card-value red">${d.fragmentation}%</div>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Governance Intelligence Summary</h2>
+  <p>
+    The national governance renderer has been initialized successfully.
+    It is connected to Airtable when a valid recordId is supplied and falls back to safe demo values otherwise.
+  </p>
+</div>
+
+</body>
+</html>
+`;
+}
+
+function render(d, embed = false) {
+  return embed ? renderEmbed(d) : renderFull(d);
+}
+
+async function handle(req, res) {
+  try {
+    const id = String(req.query.recordId || '').trim();
+    const embed = String(req.query.embed || '') === '1';
+
+    let rec = null;
+    let sectors = [];
+
+    if (id) {
+      rec = await get(NAT_TABLE, id);
+      const f = rec?.fields || {};
+      sectors = await getLinked(
+        SEC_TABLE,
+        f['Sectoral Strategies'] || f['Linked Sectoral Strategies'] || []
+      );
+    }
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(render(build(rec, sectors), embed));
+  } catch (e) {
+    res.status(500).send('Dashboard error: ' + safe(e.message));
+  }
+}
 
 app.get('/', handle);
 app.get('/api', handle);
