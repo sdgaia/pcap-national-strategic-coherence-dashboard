@@ -100,6 +100,11 @@ res.send(render(build(rec, sectors), embed));
 
 } catch (e: any) {res.status(500).send('Dashboard error: ' + safe(e.message));}}
 
-app.get('/', handle);app.get('/api', handle);
+app.get('/', handle);
+app.get('/api', handle);
 
-export default app;
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`Server running on ${PORT}`);
+});
