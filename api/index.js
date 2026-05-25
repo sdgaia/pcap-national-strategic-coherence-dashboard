@@ -1,169 +1,37 @@
 import express from 'express';
-
 const app = express();
 
-const KEY = process.env.AIRTABLE_API_KEY || '';
-const BASE = process.env.AIRTABLE_BASE_ID || '';
+const KEY = process.env.AIRTABLE_API_KEY || process.env.AIRTABLE || '';
+const BASE = process.env.AIRTABLE_BASE_ID || 'app1ulAFNbDuizG4n';
 const NAT_TABLE = process.env.AIRTABLE_NATIONAL_STRATEGIES_TABLE || 'National Strategies';
 const SEC_TABLE = process.env.AIRTABLE_SECTORAL_STRATEGIES_TABLE || 'Sectoral Strategies';
 
-function safe(v) {
-  return String(v ?? '').replace(/[&<>"]/g, s => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;'
-  }[s]));
-}
+function esc(v){return String(v ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function raw(f,n){const keys=Array.isArray(n)?n:[n];for(const k of keys){const v=f?.[k];if(v!==undefined&&v!==null&&v!=='')return v;}return null;}
+function txt(v,fb='-'){if(Array.isArray(v))return v.map(x=>x?.name||x?.id||x).filter(Boolean).join(', ')||fb;if(v===undefined||v===null||v==='')return fb;if(typeof v==='object')return v.name||v.id||fb;return String(v);}
+function pick(f,n,fb='-'){return txt(raw(f,n),fb);}
+function arr(v){if(Array.isArray(v))return v.map(x=>x?.name||x?.id||x).filter(Boolean);if(!v)return[];return String(v).split(/;|\n/).map(x=>x.trim()).filter(Boolean);}
+function nval(v){if(Array.isArray(v))return v.length?nval(v[0]):null;if(v===undefined||v===null||v==='')return null;const n=Number(String(v).replace('%','').trim());if(Number.isNaN(n))return null;return n>1&&n<=100?n/100:n;}
+function pct(v){const n=nval(v);return n===null?'-':`${Math.round(n*100)}%`;}
+function avg(xs){const a=xs.map(nval).filter(v=>v!==null);return a.length?a.reduce((x,y)=>x+y,0)/a.length:null;}
+function colour(v,invert=false){const n=nval(v);if(n===null)return'#94a3b8';if(invert){if(n<=.2)return'#16a34a';if(n<=.4)return'#2563eb';if(n<=.6)return'#f97316';return'#dc2626';}if(n>=.8)return'#16a34a';if(n>=.6)return'#2563eb';if(n>=.4)return'#f97316';return'#dc2626';}
+function label(v,invert=false){const n=nval(v);if(n===null)return'Not assessed';if(invert){if(n<=.2)return'Low';if(n<=.4)return'Moderate';if(n<=.6)return'High';return'Severe';}if(n>=.8)return'Strong';if(n>=.6)return'Moderate';if(n>=.4)return'Fragile';return'Critical';}
 
-function pick(f, names, d = '') {
-  for (const k of names) {
-    const v = f?.[k];
-    if (v !== undefined && v !== null && v !== '') return v;
-  }
-  return d;
-}
+async function get(table,id){if(!KEY||!BASE||!id)return null;const r=await fetch(`https://api.airtable.com/v0/${BASE}/${encodeURIComponent(table)}/${id}`,{headers:{Authorization:`Bearer ${KEY}`}});if(!r.ok)throw new Error(await r.text());return r.json();}
+async function getLinked(table,ids){if(!Array.isArray(ids))return[];const out=[];for(const id of ids.slice(0,16)){try{const r=await get(table,id);if(r)out.push(r);}catch(e){}}return out;}
 
-function text(f, names, d = 'Not specified') {
-  const v = pick(f, names, d);
-  if (Array.isArray(v)) {
-    return v.map(x => typeof x === 'object' ? x.name || x.id || '' : x).filter(Boolean).join(', ') || d;
-  }
-  return typeof v === 'object' && v?.name ? v.name : String(v || d);
-}
+function demo(){return {'Strategy Name':'Ghana National Development Strategy','Country':'Ghana','National Strategy Coherence Owner':'NDPC','National Strategy Coherence Score':.82,'Sectoral Strategy Aggregation Coherence Score':.78,'National Strategy Intrinsic OCI-D':.84,'National Strategy Intrinsic OCI-O':.68,'Strategic Fragmentation Index':.28,'Certification Readiness':.76,'C1 National Strategy Coherence Score':.90,'C2 National Strategy Coherence Score':.85,'C3 National Strategy Coherence Score':.75,'C4 National Strategy Coherence Score':.70,'C5 National Strategy Coherence Score':.68,'C6 National Strategy Coherence Score':.82,'Global Frameworks':'SDGs','Regional Frameworks':'Regional Policy Guide','National Strategy Source Documents':'Ghana National Development Strategy; Coordinated Programme of Economic and Social Development','Executive Summary':'The national strategy shows a coherent strategic architecture with visible sectoral propagation, but monitoring and escalation evidence require stronger recursive traceability.','Certification Outlook':'Certification readiness is promising, subject to stronger monitoring evidence and documented escalation closure.','Recommended Reviewer Focus':'Review weak monitoring claims, sectoral propagation evidence, responsibility allocation and recursive auditability.'};}
 
-function num(f, names, d = 0) {
-  const v = pick(f, names, d);
-  const raw = Array.isArray(v) ? v[0] : v;
-  const x = Number(String(raw ?? '').replace('%', '').trim());
-  return Number.isFinite(x) ? (x > 0 && x <= 1 ? Math.round(x * 100) : Math.round(x)) : d;
-}
+function build(record,sectors){const f=record?.fields||record||{};const comps=[raw(f,['C1 National Strategy Coherence Score','C1 Strategic Alignment','C1 Score']),raw(f,['C2 National Strategy Coherence Score','C2 Policy Translation','C2 Score']),raw(f,['C3 National Strategy Coherence Score','C3 Sectoral Architecture','C3 Score']),raw(f,['C4 National Strategy Coherence Score','C4 Strategic Monitoring','C4 Score']),raw(f,['C5 National Strategy Coherence Score','C5 Strategic Escalation','C5 Score']),raw(f,['C6 National Strategy Coherence Score','C6 Strategic Auditability','C6 Score'])];const filled=comps.some(x=>nval(x)!==null)?comps:[.90,.85,.75,.70,.68,.82];const intel=nval(raw(f,['Governance Intelligence Score','National Strategy Coherence Score','Final National Strategy Coherence Score']))??avg(filled)??.82;const aggregation=nval(raw(f,['Sectoral Strategy Aggregation Coherence Score','Sectoral Aggregation Intelligence']))??.78;const ociD=nval(raw(f,['National Strategy Intrinsic OCI-D','Intrinsic OCI-D','OCI-D']))??avg(filled.slice(0,3))??.84;const ociO=nval(raw(f,['National Strategy Intrinsic OCI-O','Intrinsic OCI-O','OCI-O']))??avg(filled.slice(3))??.68;const frag=nval(raw(f,['Strategic Fragmentation Index','Fragmentation Index']))??.28;const cert=nval(raw(f,['Certification Readiness','Certification Feasibility']))??.76;const sectorRows=(sectors||[]).map((r,i)=>{const sf=r.fields||{};const score=nval(raw(sf,['Final Sectoral Strategy Coherence Score','Sectoral Strategy Aggregation Coherence Score','Final Sectoral Strategy OCI-D Score']))??0;return{name:pick(sf,['Strategy Name','Sector Strategy ID','Name'],`Sectoral Strategy ${i+1}`),score,status:label(score)}}).filter(x=>x.score>0).sort((a,b)=>b.score-a.score);return{name:pick(f,['Strategy Name','Name'],'Ghana National Development Strategy'),country:pick(f,'Country','Ghana'),owner:pick(f,['National Strategy Coherence Owner','Owner'],'NDPC'),record:pick(f,['ID','Strategy ID'],'NS-1'),intel,aggregation,ociD,ociO,frag,cert,comps:filled,sectors:sectorRows.length?sectorRows:[{name:'Sustainable Agriculture & Food Systems Strategy',score:.78,status:'Moderate'},{name:'Climate / NDC Strategy',score:.66,status:'Moderate'},{name:'Forestry & Landscape Strategy',score:.61,status:'Moderate'},{name:'Waste & Circular Economy Strategy',score:.45,status:'Fragile'}],global:pick(f,['Global Frameworks','Linked Global Frameworks'],'SDGs'),regional:pick(f,['Regional Frameworks','Linked Regional Guideline'],'Regional Policy Guide'),docs:[...new Set([...arr(raw(f,['National Strategy Source Documents','Policy Source Documents'])),pick(f,['Strategy Name','Name'],'Ghana National Development Strategy')])].slice(0,6),summary:pick(f,['Executive Summary','Governance Intelligence Summary'],'The national strategy shows a coherent strategic architecture with visible sectoral propagation, but monitoring and escalation evidence require stronger recursive traceability.'),certText:pick(f,['Certification Outlook'],'Certification readiness is promising, subject to stronger monitoring evidence and documented escalation closure.'),reviewer:pick(f,['Recommended Reviewer Focus 2','Recommended Reviewer Focus'],'Review weak monitoring claims, sectoral propagation evidence, responsibility allocation and recursive auditability.')};}
 
-function status(v) {
-  return v >= 80 ? 'Strong' : v >= 60 ? 'Moderate' : v >= 40 ? 'Fragile' : 'Critical';
-}
+function gauge(title,v,invert=false){const n=nval(v)??0,deg=-90+Math.round(n*180),c=colour(v,invert);return `<div class="card kpi"><h3>${esc(title)} <span>i</span></h3><div class="gauge"><div class="face"><div class="needle" style="transform:rotate(${deg}deg)"></div><div class="hub"></div><b style="color:${c}">${pct(v)}</b><em style="color:${c}">${label(v,invert)}</em></div></div><div class="scale"><small>0%</small><small>100%</small></div></div>`;}
+function bar(name,v,sub){return `<div class="barrow"><div><b>${esc(name)}</b><small>${esc(sub)}</small></div><div class="track"><i style="width:${Math.round((nval(v)??0)*100)}%;background:${colour(v)}"></i></div><strong>${pct(v)}</strong></div>`;}
+function box(t,s){return `<div class="box"><b>${esc(t)}</b><br>${esc(s)}</div>`;}
+function doc(t,s){return `<div class="doc"><b>${esc(t)}</b>${esc(s)}</div>`;}
+function row(s,i){return `<tr><td>${i+1}</td><td>${esc(s.name)}</td><td style="color:${colour(s.score)};font-weight:900">${pct(s.score)}</td><td>${esc(s.status)}</td></tr>`;}
+function list(s,icon){return String(s||'').split(/;|\n/).map(x=>x.trim()).filter(Boolean).map(x=>`<p>${icon} ${esc(x)}</p>`).join('')||'<p>-</p>';}
 
-function col(v) {
-  return v >= 80 ? '#16a34a' : v >= 60 ? '#2563eb' : v >= 40 ? '#f97316' : '#dc2626';
-}
-
-function avg(a) {
-  const x = a.filter(n => Number.isFinite(n) && n > 0);
-  return x.length ? Math.round(x.reduce((p, c) => p + c, 0) / x.length) : 0;
-}
-
-function stdev(a) {
-  const x = a.filter(n => Number.isFinite(n) && n > 0);
-  if (x.length < 2) return 0;
-  const m = x.reduce((p, c) => p + c, 0) / x.length;
-  return Math.round(Math.sqrt(x.reduce((p, c) => p + Math.pow(c - m, 2), 0) / x.length));
-}
-
-async function get(table, id) {
-  if (!KEY || !BASE || !id) return null;
-  const url = `https://api.airtable.com/v0/${BASE}/${encodeURIComponent(table)}/${id}`;
-  const r = await fetch(url, { headers: { Authorization: `Bearer ${KEY}` } });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-
-async function getLinked(table, ids) {
-  if (!Array.isArray(ids)) return [];
-  const out = [];
-  for (const id of ids.slice(0, 16)) {
-    try {
-      const r = await get(table, id);
-      if (r) out.push(r);
-    } catch (e) {}
-  }
-  return out;
-}
-
-function build(record, sectors) {
-  const f = record?.fields || {};
-  const c = [
-    num(f, ['C1 National Strategy Coherence Score', 'C1 Policy Governance', 'C1 Score'], 0),
-    num(f, ['C2 National Strategy Coherence Score', 'C2 Instrument Governance', 'C2 Policy Governance', 'C2 Score'], 0),
-    num(f, ['C3 National Strategy Coherence Score', 'C3 Resource Governance', 'C3 Policy Governance', 'C3 Score'], 0),
-    num(f, ['C4 National Strategy Coherence Score', 'C4 Monitoring Governance', 'C4 Policy Governance', 'C4 Score'], 0),
-    num(f, ['C5 National Strategy Coherence Score', 'C5 Escalation Governance', 'C5 Policy Governance', 'C5 Score'], 0),
-    num(f, ['C6 National Strategy Coherence Score', 'C6 Traceability Governance', 'C6 Policy Governance', 'C6 Score'], 0)
-  ];
-  const cc = c.some(x => x > 0) ? c : [83, 58, 42, 15, 47, 72];
-  const score = num(f, ['National Strategy Recursive Governance Score', 'National Strategy Coherence Score', 'Final National Strategy Coherence Score', 'Overall Coherence Score', 'OVERALL Coherence Score'], avg(cc));
-  const ociD = num(f, ['National Strategy Intrinsic OCI-D', 'National Strategy Intrinsic OCI-D Score'], avg([cc[0], cc[1], cc[2]]));
-  const ociO = num(f, ['National Strategy Intrinsic OCI-O', 'National Strategy Intrinsic OCI-O Score'], avg([cc[3], cc[4], cc[5]]));
-  const aggregation = num(f, ['Sectoral Strategy Aggregation Coherence Score', 'Inherited Sectoral Strategy OCI-D Score'], score);
-  const rows = (sectors || []).map((r, i) => {
-    const sf = r.fields || {};
-    const v = num(sf, ['Final Sectoral Strategy Coherence Score', 'Sectoral Strategy Aggregation Coherence Score', 'Final Sectoral Strategy OCI-D Score', 'Overall Coherence Score', 'National Strategy Recursive Governance Score'], 0);
-    return { name: text(sf, ['Strategy Name', 'Sector Strategy ID', 'Name'], `Sectoral Strategy ${i + 1}`), score: v, status: status(v) };
-  }).filter(x => x.score > 0).sort((a, b) => a.score - b.score);
-  const sectorList = rows.length ? rows : [
-    { name: 'SS-1 Agriculture & Food Systems', score: 44, status: 'Fragile' },
-    { name: 'SS-2 Climate / NDC', score: 66, status: 'Moderate' },
-    { name: 'SS-3 Forestry & Landscape', score: 66, status: 'Moderate' },
-    { name: 'SS-4 Waste & Circular Economy', score: 28, status: 'Critical' },
-    { name: 'SS-5 SDG / VNR', score: 44, status: 'Fragile' }
-  ];
-  const dispersion = stdev(sectorList.map(x => x.score));
-  const fragmentation = Math.min(100, Math.round(dispersion * 2 + Math.max(0, 80 - Math.min(...sectorList.map(x => x.score))) / 2));
-  return {
-    id: text(f, ['ID', 'Strategy ID'], record?.id || 'NS'),
-    name: text(f, ['Strategy Name', 'Name'], 'National Strategy'),
-    country: text(f, ['Country'], 'Ghana'),
-    owner: text(f, ['National Strategy Coherence Owner'], 'Reviewer'),
-    score,
-    ociD,
-    ociO,
-    aggregation,
-    fragmentation,
-    certBase: Math.round((score + aggregation + ociD + ociO + Math.max(0, 100 - fragmentation)) / 5),
-    c: cc,
-    coherenceStatus: text(f, ['National Strategy Coherence Status', 'Final National Strategy Coherence Status'], status(score)),
-    sectors: sectorList
-  };
-}
-
-function gauge(title, value, label) {
-  return `<div class="card kpi"><div class="k-title">${safe(title)}</div><div class="semi" style="--v:${value};--c:${col(value)}"><div class="num">${value}%</div><div class="lab">${safe(label || status(value))}</div></div><div class="scale"><span>0%</span><span>100%</span></div></div>`;
-}
-
-function reverseGauge(title, value) {
-  const c = value <= 20 ? '#16a34a' : value <= 40 ? '#2563eb' : value <= 60 ? '#f97316' : '#dc2626';
-  const s = value <= 20 ? 'Low' : value <= 40 ? 'Moderate' : value <= 60 ? 'High' : 'Severe';
-  return `<div class="card kpi"><div class="k-title">${safe(title)}</div><div class="semi" style="--v:${value};--c:${c}"><div class="num">${value}%</div><div class="lab">${s}</div></div><div class="scale"><span>0%</span><span>100%</span></div></div>`;
-}
-
-function renderEmbed(d) {
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><style>*{box-sizing:border-box}html,body{margin:0;padding:0;background:transparent;font-family:Arial,Helvetica,sans-serif;color:#0b1533;overflow:hidden}.embed{width:100%;padding:6px;background:#fff}.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}.card{border:1px solid #e5e7eb;border-radius:10px;background:#fff;padding:7px;height:112px}.k-title{text-align:center;font-size:9px;font-weight:900;height:22px}.semi{width:118px;height:59px;position:relative;overflow:hidden;margin:1px auto 0}.semi:before{content:"";position:absolute;width:118px;height:118px;border-radius:50%;background:conic-gradient(from 270deg,var(--c) calc(var(--v)*1.8deg),#e5e7eb 0 180deg,transparent 0)}.semi:after{content:"";position:absolute;left:19px;top:19px;width:80px;height:80px;border-radius:50%;background:#fff}.num{position:absolute;top:24px;left:0;right:0;text-align:center;font-size:18px;font-weight:900;color:var(--c);z-index:1}.lab{position:absolute;top:45px;left:0;right:0;text-align:center;font-size:8px;font-weight:900;color:var(--c);z-index:1}.scale{display:flex;justify-content:space-between;font-size:7px;color:#64748b}@media(max-width:900px){.grid{grid-template-columns:repeat(2,1fr)}} </style></head><body><div class="embed"><div class="grid">${gauge('Governance Intelligence', d.score, d.coherenceStatus)}${gauge('Sectoral Aggregation', d.aggregation, status(d.aggregation))}${gauge('Intrinsic OCI-D', d.ociD, status(d.ociD))}${gauge('Intrinsic OCI-O', d.ociO, status(d.ociO))}${reverseGauge('Fragmentation Index', d.fragmentation)}</div></div></body></html>`;
-}
-
-function renderFull(d) {
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>PCAP National Governance Dashboard</title><style>*{box-sizing:border-box}body{margin:0;padding:24px;background:#f1f5f9;font-family:Arial,sans-serif;color:#0f172a}.header{background:white;border-radius:18px;padding:22px;box-shadow:0 2px 10px rgba(0,0,0,0.05)}.title{font-size:34px;font-weight:bold}.subtitle{margin-top:8px;color:#475569;font-size:15px}.grid{margin-top:18px;display:grid;grid-template-columns:repeat(5,1fr);gap:14px}.card{background:white;border-radius:18px;padding:18px;box-shadow:0 2px 10px rgba(0,0,0,0.05)}.card-title{color:#64748b;font-size:13px;font-weight:bold}.card-value{margin-top:10px;font-size:40px;font-weight:bold}.green{color:#16a34a}.blue{color:#2563eb}.orange{color:#f97316}.red{color:#dc2626}.section{margin-top:18px;background:white;border-radius:18px;padding:22px;box-shadow:0 2px 10px rgba(0,0,0,0.05)}.sector{margin-top:18px;background:white;border-radius:18px;padding:22px;box-shadow:0 2px 10px rgba(0,0,0,0.05)}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border:1px solid #e5e7eb;padding:8px;text-align:left}th{background:#f8fafc}@media(max-width:1200px){.grid{grid-template-columns:repeat(2,1fr)}} </style></head><body><div class="header"><div class="title">PCAP National Governance Dashboard</div><div class="subtitle">${safe(d.name)} • ${safe(d.country)} • Recursive Governance Intelligence Renderer</div></div><div class="grid"><div class="card"><div class="card-title">Governance Score</div><div class="card-value green">${d.score}%</div></div><div class="card"><div class="card-title">Sectoral Aggregation</div><div class="card-value blue">${d.aggregation}%</div></div><div class="card"><div class="card-title">OCI-D</div><div class="card-value orange">${d.ociD}%</div></div><div class="card"><div class="card-title">OCI-O</div><div class="card-value blue">${d.ociO}%</div></div><div class="card"><div class="card-title">Fragmentation</div><div class="card-value red">${d.fragmentation}%</div></div></div><div class="section"><h2>Governance Intelligence Summary</h2><p>The national governance renderer has been initialized successfully. It is connected to Airtable when a valid recordId is supplied and falls back to safe demo values otherwise.</p></div><div class="sector"><h2>Linked Sectoral Benchmark</h2><table><thead><tr><th>Sectoral Strategy</th><th>Score</th><th>Status</th></tr></thead><tbody>${d.sectors.map(s => `<tr><td>${safe(s.name)}</td><td>${s.score}%</td><td>${safe(s.status)}</td></tr>`).join('')}</tbody></table></div></body></html>`;
-}
-
-async function handle(req, res) {
-  try {
-    const id = String(req.query.recordId || '').trim();
-    const compact = String(req.query.compact || '') === '1';
-    let rec = null;
-    let sectors = [];
-    if (id) {
-      rec = await get(NAT_TABLE, id);
-      const f = rec?.fields || {};
-      sectors = await getLinked(SEC_TABLE, f['Sectoral Strategies'] || f['Linked Sectoral Strategies'] || []);
-    }
-    const d = build(rec, sectors);
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-store');
-    res.send(compact ? renderEmbed(d) : renderFull(d));
-  } catch (e) {
-    res.status(500).send('Dashboard error: ' + safe(e.message));
-  }
-}
-
-app.get('/', handle);
-app.get('/api', handle);
-
-export default app;
+function html(d){const names=['C1 Strategic Alignment','C2 Policy Translation','C3 Sectoral Architecture','C4 Strategic Monitoring','C5 Strategic Escalation','C6 Strategic Auditability'];const subs=['Strategic alignment','Policy translation','Sector architecture','Strategic monitoring','Strategic escalation','Strategic auditability'];const vals=d.comps.map(v=>nval(v)??0);const wi=vals.indexOf(Math.min(...vals));const gap=Math.abs(Math.round(d.aggregation*100)-Math.round(d.intel*100));const best=d.sectors[0];const worst=d.sectors[d.sectors.length-1];return `<!doctype html><html><head><meta charset="utf-8"><title>PCAP National Governance Intelligence</title><style>${css()}</style></head><body><div class="page"><div class="head card"><div><div><b>National Governance Intelligence Dashboard</b></div><div class="title">${esc(d.name)}</div><div class="sub">Recursive Strategic Intelligence • Referential Coherence • Governance Architecture</div><div class="meta"><span>Country: ${esc(d.country)}</span><span>Owner: ${esc(d.owner)}</span><span>Record: ${esc(d.record)}</span></div></div><div>Updated: ${new Date().toLocaleDateString()}</div></div><div class="grid g5 mb">${gauge('Governance Intelligence Score',d.intel)}${gauge('Sectoral Aggregation Intelligence',d.aggregation)}${gauge('Intrinsic OCI-D',d.ociD)}${gauge('Intrinsic OCI-O',d.ociO)}${gauge('Strategic Fragmentation Index',d.frag,true)}</div><div class="card assess mb"><h2>Overall National-Level Governance Assessment</h2><div class="grid g3"><div class="mini">National Governance Intelligence<div class="metric" style="color:${colour(d.intel)}">${pct(d.intel)}</div>${label(d.intel)}</div><div class="mini">Sectoral Propagation Intelligence<div class="metric" style="color:${colour(d.aggregation)}">${pct(d.aggregation)}</div>${label(d.aggregation)}</div><div class="mini">Strategic-Operational Gap<div class="metric">${gap}%</div>${gap<=10?'Aligned':gap<=25?'Moderate Drift':'Critical Disconnect'}</div></div><p><b>Coherent National Governance System</b></p><p>${esc(d.summary)}</p><span class="tag">Stable Translation Chain</span><span class="tag">Referential Continuity</span><span class="tag">Monitoring Drift</span><span class="tag">Escalation Exposure</span></div><div class="grid g2 mb"><div class="card"><h2>Recursive Governance Intelligence Components</h2>${names.map((n,i)=>bar(n,d.comps[i],subs[i])).join('')}<div class="weak"><span>Weakest Intelligence Layer<br>${esc(names[wi])}</span><span>${Math.round(vals[wi]*100)}%</span></div></div><div class="card"><h2>Governance Intelligence Layer</h2>${names.map((n,i)=>bar(n,d.comps[i],['Reference alignment','Policy translation','Architecture maturity','Monitoring propagation','Escalation logic','Auditability'][i])).join('')}</div></div><div class="grid g3 mb"><div class="card"><h2>Referential Mapping Chain</h2><div class="chain"><div class="node">Global Framework<br>${esc(d.global)}</div><div class="arrow">to</div><div class="node">Regional Framework<br>${esc(d.regional)}</div><div class="arrow">to</div><div class="node">National Strategy</div><div class="arrow">to</div><div class="node">Sectoral Strategies</div></div></div><div class="card">${gauge('Certification Feasibility',d.cert)}</div><div class="card"><h2>Propagation Signal</h2>${box('Strongest propagation',`${best.name} - ${pct(best.score)}`)}${box('Weakest propagation',`${worst.name} - ${pct(worst.score)}`)}<span class="tag">Monitoring propagation risk</span></div></div><div class="card mb"><h2>Strategic Documents Used in Assessment</h2><div class="docgrid">${doc('Primary strategy document',d.docs[0]||d.name)}${doc('Recursive governance layer','National -> Sectoral Strategy')}${doc('Governance owner',d.owner)}${doc('Assessment method','Recursive C1-C6 assessment')}${d.docs.slice(1).map((x,i)=>doc(`Reference ${i+1}`,x)).join('')}</div></div><div class="grid g2"><div class="card"><h2>Linked Sectoral Governance Intelligence Benchmarking</h2><table><thead><tr><th>#</th><th>Sectoral Strategy</th><th>Governance Intelligence</th><th>Status</th></tr></thead><tbody>${d.sectors.map(row).join('')}</tbody></table></div><div class="card"><h2>Governance Intelligence Synthesis</h2>${box('Executive Summary',d.summary)}${box('Certification Outlook',d.certText)}${box('Reviewer Focus',d.reviewer)}${box('Top Intelligence Strengths','Strong alignment with national and regional priorities; coherent policy translation architecture; visible sectoral propagation.')}${box('Key Intelligence Gaps','Monitoring intelligence remains uneven; escalation logic and evidence traceability require stronger operational closure.')}</div></div></div></body></html>`;}
+function css(){return `*{box-sizing:border-box}body{margin:0;background:#f4f6fb;color:#0f172a;font-family:Arial,sans-serif;padding:18px}.page{max-width:1560px;margin:auto}.card{background:white;border:1px solid #e5e7eb;border-radius:12px;padding:18px;box-shadow:0 1px 8px rgba(15,23,42,.05)}.head{display:flex;justify-content:space-between;margin-bottom:16px}.title{font-size:34px;font-weight:900}.sub{color:#64748b;margin-top:8px}.meta{display:flex;gap:20px;flex-wrap:wrap;margin-top:12px}.grid{display:grid;gap:14px}.g5{grid-template-columns:repeat(5,1fr)}.g3{grid-template-columns:repeat(3,1fr)}.g2{grid-template-columns:1fr 1fr}.mb{margin-bottom:16px}.kpi{min-height:210px}h3{font-size:15px;margin:0 0 10px}.gauge{height:125px;display:flex;align-items:flex-end;justify-content:center;overflow:hidden}.face{position:relative;width:218px;height:109px;border-radius:218px 218px 0 0;background:conic-gradient(from 270deg,#dc2626 0 45deg,#f97316 45deg 72deg,#2563eb 72deg 144deg,#16a34a 144deg 180deg,#e5e7eb 180deg)}.face:after{content:"";position:absolute;left:34px;top:34px;width:150px;height:75px;border-radius:150px 150px 0 0;background:white}.needle{position:absolute;left:107px;bottom:0;width:4px;height:82px;background:#111827;transform-origin:bottom center;z-index:4}.hub{position:absolute;left:97px;bottom:-11px;width:24px;height:24px;border-radius:50%;background:#111827;border:5px solid white;z-index:5}.face b{position:absolute;left:0;right:0;bottom:27px;text-align:center;font-size:34px;font-weight:900;z-index:6}.face em{position:absolute;left:0;right:0;bottom:9px;text-align:center;font-size:12px;font-weight:900;font-style:normal;z-index:6}.scale{display:flex;justify-content:space-between;color:#64748b;font-size:12px}.assess{background:linear-gradient(135deg,#f8fafc,#eff6ff)}.mini{background:white;border:1px solid #dbeafe;border-radius:10px;padding:12px}.metric{font-size:30px;font-weight:900;margin:6px 0}.tag{display:inline-block;background:#f8fafc;border:1px solid #e5e7eb;border-radius:999px;padding:7px 10px;margin:4px;font-weight:800;font-size:12px}.barrow{display:grid;grid-template-columns:210px 1fr 50px;gap:12px;align-items:center;margin:12px 0}.barrow small{display:block;color:#64748b;font-size:11px}.track{height:10px;background:#e5e7eb;border-radius:999px;overflow:hidden}.track i{display:block;height:100%;border-radius:999px}.weak{border:1px solid #fecaca;background:#fff1f2;color:#b91c1c;border-radius:10px;padding:12px;font-weight:900;margin-top:14px;display:flex;justify-content:space-between}.docgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.doc{background:#f8fafc;border:1px solid #e5e7eb;border-radius:10px;padding:10px}.doc b{display:block;margin-bottom:5px}.chain{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.node{background:#eff6ff;border:1px solid #dbeafe;border-radius:10px;padding:12px;font-weight:800}.arrow{font-size:16px;color:#2563eb;font-weight:900}.box{border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:10px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border:1px solid #e5e7eb;padding:8px;text-align:left}th{background:#f8fafc}@media(max-width:1100px){.g5,.g3,.g2,.docgrid{grid-template-columns:1fr}.head{display:block}}`}
+async function handle(req,res){try{const id=String(req.query.recordId||'').trim();let rec=null,sectors=[];if(id){rec=await get(NAT_TABLE,id);const f=rec?.fields||{};sectors=await getLinked(SEC_TABLE,f['Sectoral Strategies']||f['Linked Sectoral Strategies']||[])}res.type('html').send(html(build(rec||demo(),sectors)))}catch(e){res.status(500).send('Dashboard error: '+esc(e.message))}}
+app.get('/',handle);app.get('/api',handle);export default app;
